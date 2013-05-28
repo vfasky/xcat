@@ -116,7 +116,7 @@ class Mongod(object):
 if __name__ == '__main__':
     from tornado.ioloop import IOLoop
     from tornado.httpserver import HTTPServer
-    from tornado.options import parse_command_line
+    #from tornado.options import parse_command_line
     from tornado.web import asynchronous, RequestHandler, Application
 
     mongod = Mongod()

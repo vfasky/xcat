@@ -3,7 +3,7 @@
 # @Date: 2013-05-02 17:13:37
 # @Author: vfasky (vfasky@gmail.com)
 # @Version: $Id$
-# peewee for Momoke
+# peewee for Momoko
 
 __all__ = [
     'BigIntegerField',
@@ -26,7 +26,7 @@ __all__ = [
 ]
 
 '''
-Momoke ORM(peewee)
+Momoko ORM(peewee)
 ==================
 
 ## demo
