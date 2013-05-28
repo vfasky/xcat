@@ -9,12 +9,18 @@ __all__ = [
     'acl',
     'route',
     'session',
+    'Application',
+    'RequestHandler'
 ]
-
+import time
 import functools
 import session as Xsession
 import utils
-from tornado.web import url, RequestHandler
+import plugins
+from tornado.web import url, RequestHandler, \
+     StaticFileHandler, Application
+
+from jinja2 import Environment, FileSystemLoader
 
 def session(method):
     '''
@@ -35,7 +41,7 @@ def session(method):
                 self._session = Session(self.get_secure_cookie(session_name), **session_config)
             else:
                 session = Session(**session_config)
-                self.set_secure_cookie(key , session.id)
+                self.set_secure_cookie(session_name , session.id)
                 self._session = session
 
             def none_callback(*args, **kwargs):
@@ -260,9 +266,10 @@ class Route(object):
 
         # 404
         item = url(r"/(.+)$", _404Handler)
-        if item not in cls._routes['.*$'] :
+
+        if cls._routes.get('.*$') and item not in cls._routes['.*$'] :
             cls._routes['.*$'].append(item) 
-                    
+         
         application.handlers = []
         application.named_handlers = {}
 
@@ -278,7 +285,6 @@ class Route(object):
     def routes(cls, application=None):
         if application:
             cls.reset_handlers(application)
-            
             for host, handlers in cls._routes.items():
                 application.add_handlers(host, handlers)
 
@@ -294,16 +300,194 @@ class Route(object):
 
 route = Route
 
+class Application(Application):
+   
+    def __init__(self, handlers=None, default_host="", transforms=None,
+                 wsgi=False, **settings):
+
+        if settings.get('template_path'):
+            # 配置 jinja2
+            self.jinja_env = Environment(
+                loader = FileSystemLoader(settings['template_path']),
+                auto_reload = settings['debug'],
+                autoescape = settings['autoescape']
+            )
+
+        ret = super(Application,self).__init__(
+            handlers,
+            default_host,
+            transforms,
+            wsgi,
+            **settings
+        )
+
+        self.initialize(**settings)
+
+        return ret
+
+    @plugins.init
+    def initialize(self, **settings):
+        Route.acl(self)
+        Route.routes(self) 
+
+
+class RequestHandler(RequestHandler):
+
+    # 存放路由
+    routes = []
+
+    def finish(self, chunk=None):
+        super(RequestHandler,self).finish(chunk)
+        self.on__finish()
+
+    @plugins.Events.on_finish
+    def on__finish(self):
+        # 关闭数据库连接
+        # database = self.settings.get('database')
+        # if database:
+        #     database.close()
+        pass
+        
+    # 没有权限时的处理
+    def on_access_denied(self):
+        self.write_error(403)
+
+    @plugins.Events.on_init
+    def initialize(self):
+        # 记录开始时间
+        self._start_time = time.time()
+
+        # 打开数据库连接
+        # database = self.settings.get('database')
+        # if database:
+        #     database.connect()
+
+
+    def is_ajax(self):
+        return "XMLHttpRequest" == self.request.headers.get("X-Requested-With")
+
+    # 多国语言
+    def _(self, txt, plural_message=None, count=None):
+        if txt == None:
+            return txt
+        return self.locale.translate(unicode(str(txt),'utf8'),plural_message,count)
+
+    @plugins.Events.before_execute
+    @acl
+    def _execute(self, transforms, *args, **kwargs):
+        return super(RequestHandler,self)._execute(transforms, *args, **kwargs)
+
+    @plugins.Events.before_render
+    def render(self, template_name, **kwargs):
+        return super(RequestHandler,self).render(template_name, **kwargs)
+
+    def render_string(self, template_name, **kwargs):
+        context = {
+            'Date' : Date ,
+            'url_for' : Route.url_for ,
+            '_' : self._ ,
+            'handler' : self ,
+            'request' : self.request ,
+            'current_user' : self.current_user,
+            'locale' : self.locale,
+            'static_url' : self.static_url,
+            'xsrf_form_html' : self.xsrf_form_html,
+            'json_encode': Json.encode,
+            'linkify': linkify,
+        }
+        context.update(self.ui)
+
+        context.update(kwargs)
+
+        template = self.application.jinja_env.get_template(
+            template_name,
+            parent=self.get_template_path()
+        )
+        return template.render(**context)
+
+    @session
+    def set_current_user(self,session):
+        self.session['current_user'] = session
+
+    @session
+    def get_current_user(self):
+        return self.session['current_user']
+
+    def get_error_html(self, status_code = 'tip', **kwargs):
+        return self.render_string('error/%s.html' % status_code, **kwargs)
+
+    def write_error(self, status_code = 'tip', **kwargs):
+        if self.is_ajax() and kwargs.get('msg',False) :
+            return self.write({
+                'success' : False ,
+                'msg' : kwargs.get('msg')
+            })
+        return super(RequestHandler,self).write_error(status_code, **kwargs)
+
+    # 取运行时间
+    def get_run_time(self):
+        return round(time.time() - self._start_time , 3)
 
 '''
+
 测试 and 用法
+===============
+
+``` sh 
+
+This is ApacheBench, Version 2.3 <$Revision: 655654 $>
+Copyright 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Licensed to The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 192.168.0.135 (be patient).....done
+
+
+Server Software:        TornadoServer/3.0.1
+Server Hostname:        192.168.0.135
+Server Port:            8181
+
+Document Path:          /
+Document Length:        0 bytes
+
+Concurrency Level:      10
+Time taken for tests:   0.033 seconds
+Complete requests:      10
+Failed requests:        0
+Write errors:           0
+Total transferred:      3950 bytes
+HTML transferred:       0 bytes
+Requests per second:    307.60 [#/sec] (mean)
+Time per request:       32.510 [ms] (mean)
+Time per request:       3.251 [ms] (mean, across all concurrent requests)
+Transfer rate:          118.65 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        1    1   0.4      1       2
+Processing:    18   27   5.3     31      31
+Waiting:       17   26   5.3     30      31
+Total:         19   28   5.3     32      32
+
+Percentage of the requests served within a certain time (ms)
+  50%     32
+  66%     32
+  75%     32
+  80%     32
+  90%     32
+  95%     32
+  98%     32
+  99%     32
+ 100%     32 (longest request)
+
 '''
 if __name__ == '__main__':
     from tornado.ioloop import IOLoop
     from tornado.httpserver import HTTPServer
     #from tornado.options import parse_command_line
-    from tornado.web import asynchronous, RequestHandler, Application
+    from tornado.web import asynchronous
+    import mopee
 
+    @route(r'/', name='index')
     class Handler(RequestHandler):
 
         @asynchronous
@@ -317,12 +501,21 @@ if __name__ == '__main__':
             # 清空
             #self.session = None
             self.finish()
+
+    database = mopee.PostgresqlAsyncDatabase('test',
+        user = 'vfasky',
+        host = '127.0.0.1',
+        password = '19851024',
+        size = 20,
+    )
+
+    settings = dict(
+        debug=True, 
+        database=database,
+        cookie_secret="fsfwo#@(sfk"
+    )
                         
-   
-    application = Application([
-        (r'/', Handler),
-    ], debug=True, 
-    cookie_secret="fsfwo#@(sfk")
+    application = Application([], **settings)
 
     http_server = HTTPServer(application)
     http_server.listen(8181)

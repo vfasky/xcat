@@ -460,7 +460,7 @@ class AsyncModel(with_metaclass(BaseModel)):
     @classmethod
     def create_table(cls, fail_silently=False, callback=None):
         def _callback_0(exists):
-            if fail_silently and exist:
+            if fail_silently and exists:
                 return
 
             db = cls._meta.database
@@ -468,10 +468,12 @@ class AsyncModel(with_metaclass(BaseModel)):
             if db.sequences and pk.sequence and not db.sequence_exists(pk.sequence):
                 db.create_sequence(pk.sequence)
 
+
             def _callback_1(cursor):
                 count = 0
                 complete_count = 0
                 def _callback_2(cursor):
+                    global complete_count
                     complete_count = complete_count + 1
                     if count == complete_count:
                         callback(cursor)
