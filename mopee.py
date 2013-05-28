@@ -58,11 +58,23 @@ class AsyncHandler(RequestHandler):
     @asynchronous
     @gen.engine
     def get(self):
+        # 判断表是否存在
         exists =  yield gen.Task(User.table_exists)
+        # 如果不存在，创建表
         if not exists:
             User.create_table()
-        user = yield gen.Task(User.select().where(User.name == 'vfasky').get)
+
+        # 添加数据    
+        user = User(
+            name = 'vfasky',
+            password = '1233',
+        )
+        pk = yield gen.Task(user.save)
+
+        # 查询表
+        user = yield gen.Task(User.select().where(User.id == pk).get)
         self.write(user.name)
+
         self.finish()
 
 if __name__ == '__main__':
