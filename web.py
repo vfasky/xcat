@@ -17,8 +17,11 @@ import functools
 import session as Xsession
 import utils
 import plugins
+import cache
+import uuid
 from tornado.web import url, RequestHandler, \
      StaticFileHandler, Application
+from tornado import gen
 
 from jinja2 import Environment, FileSystemLoader
 
@@ -99,20 +102,8 @@ def acl(method):
 
         return False
 
-    @functools.wraps(method)
-    def wrapper(self, transforms, *args, **kwargs):
-        # 告诉浏览器不要缓存
-        self.set_header('Pragma', 'no-cache')
-        self.set_header('Expires', -1)
-
-        # 唯一标识
-        URI = self.__class__.__module__ + '.' + self.__class__.__name__
-        # 访问规则
-        rules = self.settings.get('acls', [])
-
-        if len(rules) == 0:
-            return method(self, transforms, *args, **kwargs)
-
+    # 取当前用户角色
+    def get_roles(self):
         # 当前用户
         current_user = self.current_user
 
@@ -131,9 +122,29 @@ def acl(method):
 
                 for r in current_user['roles']:
                     roles.append(r)
+        return roles
 
+
+    @functools.wraps(method)
+    def wrapper(self, transforms, *args, **kwargs):
+        # 告诉浏览器不要缓存
+        self.set_header('Pragma', 'no-cache')
+        self.set_header('Expires', -1)
+
+        # 唯一标识
+        URI = self.__class__.__module__ + '.' + self.__class__.__name__
+        # 访问规则
+        rules = self.settings.get('acls', [])
+
+        if len(rules) == 0:
+            return method(self, transforms, *args, **kwargs)
+
+        roles = False
+        
         for r in rules:
             if r['URI'] == URI:
+                if False == roles:
+                    roles = get_roles()
                 if False == check(r, roles):
                     self._transforms = transforms
                     self.on_access_denied()
@@ -302,6 +313,7 @@ route = Route
 
 class Application(Application):
    
+    
     def __init__(self, handlers=None, default_host="", transforms=None,
                  wsgi=False, **settings):
 
@@ -312,6 +324,14 @@ class Application(Application):
                 auto_reload = settings['debug'],
                 autoescape = settings['autoescape']
             )
+
+        # 初始化 app 缓存
+        self.cache = False
+        if settings.get('cache') and hasattr(cache, settings['cache'].get('storage', 'Mongod')):
+            Cache = getattr(cache, settings['cache'].get('storage', 'Mongod'))
+            self.cache = Cache()
+            self._sync_key = settings.get('sync_key', 'xcat.web.Application.id')
+            
 
         ret = super(Application,self).__init__(
             handlers,
@@ -325,10 +345,54 @@ class Application(Application):
 
         return ret
 
+    def sync_ping(self):
+        # 更新同步信号 
+        if self.cache:
+            self._sync_id = str(uuid.uuid4())
+            # 同步 id
+            self.sync(self._sync_id)
+
+    @gen.engine
+    def sync(self, sync_id, callback=None):
+        route.reset()
+        # 重新加载 app handlers
+        app_handlers = self.settings['app_path'].split(os.path.sep).pop() + '.handlers'
+        handlers = import_object(app_handlers)
+     
+        for name in handlers.__all__:
+            handler_module = import_object(app_handlers + '.' + name)
+            reload(handler_module)
+            for v in dir(handler_module):
+                o = getattr(handler_module,v)
+                if type(o) is types.ModuleType:
+                    reload(o)
+
+        yield gen.Task(plugins.reset)
+        self.initialize()
+
+        # 标记已同步
+        yield gen.Task(self.cache.set, self._sync_key, sync_id)
+
+        if callback:
+            callback(True)
+
+    @gen.engine
+    def __call__(self, request):
+        if self.cache:
+            sync_id = yield gen.Task(self.cache.get, self._sync_key, 0)
+            if sync_id != self._sync_id:
+                #print '同步'
+                ret = yield gen.Task(self.sync, sync_id)
+
+        return super(Application,self).__call__(request)
+
     @plugins.init
+    @gen.engine
     def initialize(self, **settings):
         Route.acl(self)
-        Route.routes(self) 
+        Route.routes(self)
+        if self.cache:
+            self._sync_id = yield gen.Task(self.cache.get, self._sync_key, 0) 
 
 
 class RequestHandler(RequestHandler):
@@ -487,7 +551,7 @@ if __name__ == '__main__':
     from tornado.web import asynchronous
     import mopee
 
-    @route(r'/', name='index')
+    @route(r'/')
     class Handler(RequestHandler):
 
         @asynchronous
