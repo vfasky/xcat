@@ -45,7 +45,7 @@ class Base(object):
         pass
 
     def get_all(self, callback=None):
-        def _remove_callback():
+        def _remove_callback(ret):
             callback({})
 
         def _update_callback(value):
@@ -60,7 +60,7 @@ class Base(object):
             cache_life = value.get('time', 0) + self.left_time
             if cache_life < this_time:
                 # 缓存已经失效
-                self.remove(callback=_remove_callback)
+                self.clear(callback=_remove_callback)
             elif (cache_life - this_time) > (self.left_time / 2):
                 # 缓存周期已经超过生存周期的一半，更新时间周期
                 self.storage.set(value.get('data', {}), callback=_update_callback)

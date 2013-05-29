@@ -311,9 +311,26 @@ class Route(object):
 
 route = Route
 
+def sync_app(method):
+    '''
+    同步各个app
+    '''
+
+    @functools.wraps(method)
+    @gen.engine
+    def wrapper(self, request):
+        if self.cache:
+            sync_id = yield gen.Task(self.cache.get, self._sync_key, 0)
+            if sync_id != self._sync_id:
+                #print '同步'
+                ret = yield gen.Task(self.sync, sync_id)
+        method(self, request)
+
+    return wrapper
+
+
 class Application(Application):
    
-    
     def __init__(self, handlers=None, default_host="", transforms=None,
                  wsgi=False, **settings):
 
@@ -341,6 +358,9 @@ class Application(Application):
             **settings
         )
 
+        route.acl(self)
+        route.routes(self)
+
         self.initialize(**settings)
 
         return ret
@@ -354,7 +374,9 @@ class Application(Application):
 
     @gen.engine
     def sync(self, sync_id, callback=None):
-        route.reset()
+        route.acl(self)
+        route.routes(self)
+
         # 重新加载 app handlers
         app_handlers = self.settings['app_path'].split(os.path.sep).pop() + '.handlers'
         handlers = import_object(app_handlers)
@@ -367,7 +389,6 @@ class Application(Application):
                 if type(o) is types.ModuleType:
                     reload(o)
 
-        yield gen.Task(plugins.reset)
         self.initialize()
 
         # 标记已同步
@@ -376,21 +397,13 @@ class Application(Application):
         if callback:
             callback(True)
 
-    @gen.engine
+    @sync_app
     def __call__(self, request):
-        if self.cache:
-            sync_id = yield gen.Task(self.cache.get, self._sync_key, 0)
-            if sync_id != self._sync_id:
-                #print '同步'
-                ret = yield gen.Task(self.sync, sync_id)
-
-        return super(Application,self).__call__(request)
+        return super(Application, self).__call__(request)
 
     @plugins.init
     @gen.engine
     def initialize(self, **settings):
-        Route.acl(self)
-        Route.routes(self)
         if self.cache:
             self._sync_id = yield gen.Task(self.cache.get, self._sync_key, 0) 
 
@@ -401,11 +414,11 @@ class RequestHandler(RequestHandler):
     routes = []
 
     def finish(self, chunk=None):
-        super(RequestHandler,self).finish(chunk)
-        self.on__finish()
+        super(RequestHandler, self).finish(chunk)
+        self._on_finish()
 
     @plugins.Events.on_finish
-    def on__finish(self):
+    def _on_finish(self):
         # 关闭数据库连接
         # database = self.settings.get('database')
         # if database:
@@ -447,8 +460,8 @@ class RequestHandler(RequestHandler):
 
     def render_string(self, template_name, **kwargs):
         context = {
-            'Date' : Date ,
-            'url_for' : Route.url_for ,
+            'Date' : utils.Date ,
+            'url_for' : route.url_for ,
             '_' : self._ ,
             'handler' : self ,
             'request' : self.request ,
@@ -576,6 +589,7 @@ if __name__ == '__main__':
     settings = dict(
         debug=True, 
         database=database,
+        cache={},
         cookie_secret="fsfwo#@(sfk"
     )
                         

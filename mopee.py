@@ -581,3 +581,54 @@ class AsyncModel(with_metaclass(BaseModel)):
 
     def __ne__(self, other):
         return not self == other        
+
+# test
+if __name__ == '__main__':
+    from tornado import gen
+    from tornado.ioloop import IOLoop
+    from tornado.httpserver import HTTPServer
+    from tornado.web import asynchronous, RequestHandler, Application
+
+    database = PostgresqlAsyncDatabase('test',
+        user = 'vfasky',
+        host = '127.0.0.1',
+        password = '19851024',
+        size = 20,
+    )
+
+    class User(AsyncModel):
+        class Meta:
+            database = database
+
+        name = CharField()
+        password = CharField(max_length = 255)
+
+    database.connect()
+
+
+    class AsyncHandler(RequestHandler):
+        @asynchronous
+        @gen.engine
+        def get(self):
+            exists =  yield gen.Task(User.table_exists)
+            if not exists:
+                yield gen.Task(User.create_table)
+
+            user = User()
+            user.name = 'wing'
+            user.password = '5677'
+            
+            pk = yield gen.Task(user.save)
+            print pk
+
+            user = yield gen.Task(User.select().where(User.name == 'wing').get)
+            self.write(user.name)
+            self.finish()
+
+    application = Application([
+        (r'/', AsyncHandler),
+    ], debug=True)
+
+    http_server = HTTPServer(application)
+    http_server.listen(8181)
+    IOLoop.instance().start()

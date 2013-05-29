@@ -18,6 +18,7 @@ from mopee import AsyncModel, CharField, TextField
 from utils import Json, Date
 from tornado import gen
 from tornado.util import import_object 
+from tornado.web import UIModule
 
 # 绑定的 app 对象
 _application = None
@@ -128,7 +129,8 @@ def set_config(plugin_name, config, callback=None):
     pl_ar.config = Json.encode(config)
     yield gen.Task(pl_ar.save)
     _config[plugin_name] = config
-    #TODO , 是否需要 reset app
+    if _application:
+        _application.sync_ping()
     if None:
         callback()
 
@@ -154,13 +156,12 @@ class Events(object):
     handler 事件绑定
     '''
                
-    '''
-      控制器初始化时执行
-
-        注： 这时数据库连接还未打开
-    '''
+    
     @staticmethod
     def on_init(method):
+        '''
+          控制器初始化时执行
+        '''
 
         @functools.wraps(method)
         @gen.engine
@@ -272,3 +273,192 @@ class Events(object):
                 method(self)
 
         return wrapper
+
+# 安装插件
+@gen.engine
+def install(plugin_name):
+    global _application
+    register = import_object(plugin_name.strip() + '.register')
+    
+    name = register._handler.__module__ + \
+           '.' + register._handler.__name__
+
+    count = yield gen.Task(Plugins.select().where(Plugins.name == name).count)
+    if count == 0 :       
+        plugin = import_object(name)()
+        plugin.install()
+
+        # 尝试自加加载 ui_modules.py
+        try:
+            ui_modules = import_object(plugin_name + '.uimodules')
+            for v in dir(ui_modules):
+                if issubclass(getattr(ui_modules,v), UIModule) \
+                and v != 'UIModule':
+                    plugin.add_ui_module(v)
+        except Exception, e:
+            pass
+
+        # 尝试自加加载 handlers.py
+        try:
+            handlers = import_object(plugin_name + '.handlers')
+            reload(handlers)
+            for v in dir(handlers):
+              
+                if issubclass(getattr(handlers,v), RequestHandler) \
+                and v != 'RequestHandler':
+
+                    plugin.add_handler(v)
+        except Exception, e:
+            pass
+
+
+        handlers = []
+        for v in plugin._handlers:
+            handlers.append(
+                v.__module__ + '.' + v.__name__
+            )
+
+        ui_modules = []
+        for v in plugin._ui_modules:
+            ui_modules.append(
+                v.__module__ + '.' + v.__name__
+            )
+
+        pl = Plugins()
+        pl.name        = name
+        pl.bind        = Json.encode(register._targets)
+        pl.handlers    = Json.encode(handlers)
+        pl.ui_modules  = Json.encode(ui_modules)
+
+        #TODO form 部分重构
+        # if plugin.get_form() :
+        #     pl.config = Json.encode(plugin.get_form().get_default_values())
+        yield gen.Task(pl.save)
+
+        # 通知 application 同步
+        if _application:
+            _application.sync_ping()
+
+
+# 卸载插件
+@gen.engine
+def uninstall(plugin_name):
+    register = import_object(plugin_name.strip() + '.register')
+    
+    name = register._handler.__module__ + \
+           '.' + register._handler.__name__
+
+    ar = Plugins.select().where(Plugins.name == name)
+    count = yield gen.Task(ar.count)
+    if count == 1 :
+        plugin = import_object(name)()
+        plugin.uninstall()
+
+        ret = yield gen.Task(Plugins.delete()\
+                                    .where(Plugins.name == name)\
+                                    .execute)
+
+        # 通知 application 同步
+        if ret and _application:
+            _application.sync_ping()
+
+class Register(object):
+    '''
+    插件注册表
+    '''
+    
+    def __init__(self):
+        self._handler = False
+        self._targets = {}
+        self._events  = (
+            'on_init' , 
+            'before_execute' , 
+            'before_render' ,
+            'on_finish' ,
+        )
+
+    # 注册对象
+    def handler(self):
+        def decorator(handler):
+            self._handler = handler
+            return handler
+        return decorator
+
+    # 绑定事件
+    def bind(self, event, targets):
+        def decorator(func):
+            if event in self._events:
+                self._targets.setdefault(event,[])
+                for v in targets :
+                    self._targets[event].append({
+                        'target' : v ,
+                        'callback' : func.__name__
+                    })
+            return func
+        return decorator
+
+
+class Base(object):
+    """
+      插件的基类
+    """
+
+    def __init__(self):
+
+        self.module = self.__class__.__module__
+
+        self.full_name = self.module + '.' + self.__class__.__name__
+
+  
+        # 运行时的上下文
+        self._context = {}
+
+        # 插件的控制器
+        self._handlers = []
+
+        # ui modules
+        self._ui_modules = []
+
+
+    '''
+      安装时执行
+
+    '''
+    def install(self):
+        pass
+
+    '''
+      卸载时执行
+    '''
+    def uninstall(self):
+        pass
+
+    def get_form(self):
+        return False
+
+    # 取配置
+    @property
+    def config(self):
+        return get_config(self.full_name , {})
+
+    def set_config(self, config):
+        set_config(self.full_name, config)
+
+    '''
+      添加控制器
+    '''
+    def add_handler(self, handler):
+        handler = self.module + '.handlers.' + handler
+        handler = import_object(handler)
+        if handler not in self._handlers:
+            self._handlers.append(handler)
+
+    '''
+      添加 UI models
+    '''
+    def add_ui_module(self, ui_module):
+        ui_module = self.module + '.uimodules.' + ui_module
+        ui_module = import_object(ui_module)
+        if ui_module not in self._ui_modules:
+            self._ui_modules.append(ui_module)
+
