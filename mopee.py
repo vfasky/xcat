@@ -189,12 +189,16 @@ class PostgresqlAsyncDatabase(PostgresqlDatabase):
        
     @gen.engine
     def execute_sql(self, sql, params=None, require_commit=True, callback=None):
-        cursor = yield momoko.Op(self.get_conn().execute, sql, params or ())
-        #logger.debug((sql, params))
-        #if require_commit and self.get_autocommit():
-            #self.commit()
+        params = params or ()
+        if require_commit and self.get_autocommit():
+            cursors = yield momoko.Op(self.get_conn().transaction, [(sql, params)])
+            for i, cursor in enumerate(cursors):
+                pass
+        else:
+            cursor = yield momoko.Op(self.get_conn().execute, sql, params )
         
-        if callback:
+        if callback and cursor:
+            #print cursor
             callback(cursor)
      
     def get_tables(self, callback=None):
@@ -226,11 +230,9 @@ class PostgresqlAsyncDatabase(PostgresqlDatabase):
         self.execute_sql('SET search_path TO %s' % path_params, search_path)
 
 class AsyncQuery(Query):
-
     def _execute(self, callback=None):
         sql, params = self.sql()
         return self.database.execute_sql(sql, params, self.require_commit, callback=callback)
-
 
 class AsyncUpdateQuery(UpdateQuery):
     def _execute(self, callback=None):
@@ -239,7 +241,8 @@ class AsyncUpdateQuery(UpdateQuery):
 
     def execute(self, callback=None):
         def _callback(cursor):
-            callback(self.database.rows_affected(cursor))
+            ret = self.database.rows_affected(cursor)
+            callback(ret)
         self._execute(callback=_callback)
 
 class AsyncDeleteQuery(DeleteQuery):
@@ -377,6 +380,7 @@ class AsyncSelectQuery(SelectQuery):
 
     def get(self, callback=None):
         clone = self.paginate(1, 1)
+
         try:
             def _callback(cursor):
                 if callback:
@@ -387,17 +391,7 @@ class AsyncSelectQuery(SelectQuery):
                 self.sql()
             ))
     
-class AsyncModel(with_metaclass(BaseModel)):
-    def __init__(self, *args, **kwargs):
-        self._data = self._meta.get_default_dict()
-        self._obj_cache = {} # cache of related objects
-
-        for k, v in kwargs.items():
-            setattr(self, k, v)
-
-    @classmethod
-    def alias(cls):
-        return ModelAlias(cls)
+class AsyncModel(Model):
 
     @classmethod
     def select(cls, *selection):
@@ -425,31 +419,37 @@ class AsyncModel(with_metaclass(BaseModel)):
         return AsyncRawQuery(cls, sql, *params)
 
     @classmethod
-    def create(cls, callback=None, **query):
+    def create(cls, **query):
+        callback=None
+        if kwargs.has_key('callback'):
+            callback = kwargs['callback']
+            del kwargs['callback']
         inst = cls(**query)
         inst.save(force_insert=True, callback=callback)
-        return inst
+       
 
     @classmethod
-    def get(cls, callback=None, *query, **kwargs):
+    def get(cls, *query, **kwargs):
         sq = cls.select().naive()
         if query:
             sq = sq.where(*query)
         if kwargs:
             sq = sq.filter(**kwargs)
-        return sq.get(callback=callback)
+        return sq.get
 
     @classmethod
-    def get_or_create(cls, callback=None, **kwargs):
+    def get_or_create(cls, **kwargs):
+        callback=None
+        if kwargs.has_key('callback'):
+            callback = kwargs['callback']
+            del kwargs['callback']
+            
         sq = cls.select().filter(**kwargs)
         try:
             return sq.get(callback=callback)
         except cls.DoesNotExist:
             return cls.create(callback=callback, **kwargs)
 
-    @classmethod
-    def filter(cls, *dq, **query):
-        return cls.select().filter(*dq, **query)
 
     @classmethod
     def table_exists(cls, callback=None):
@@ -502,21 +502,6 @@ class AsyncModel(with_metaclass(BaseModel)):
     def drop_table(cls, fail_silently=False, callback=None):
         cls._meta.database.drop_table(cls, fail_silently, callback=callback)
 
-    def get_id(self):
-        return getattr(self, self._meta.primary_key.name)
-
-    def set_id(self, id):
-        setattr(self, self._meta.primary_key.name, id)
-
-    def prepared(self):
-        pass
-
-    def _prune_fields(self, field_dict, only):
-        new_data = {}
-        for field in only:
-            if field.name in field_dict:
-                new_data[field.name] = field_dict[field.name]
-        return new_data
 
     def save(self, force_insert=False, only=None, callback=None):
         field_dict = dict(self._data)
@@ -530,7 +515,7 @@ class AsyncModel(with_metaclass(BaseModel)):
                 **field_dict
             ).where(pk == self.get_id())
 
-            def _callback():
+            def _callback(ret):
                 callback(self.get_id())
 
             update.execute(callback=_callback)
@@ -545,42 +530,19 @@ class AsyncModel(with_metaclass(BaseModel)):
                 callback(new_pk)
 
             insert.execute(callback=_callback)
-            
-    def dependencies(self, search_nullable=False):
-        #stack = [(type(self), self.select().where(self._meta.primary_key == self.get_id()))]
-        #seen = set()
-
-        #while stack:
-            #klass, query = stack.pop()
-            #if klass in seen:
-                #continue
-            #seen.add(klass)
-            #for rel_name, fk in klass._meta.reverse_rel.items():
-                #rel_model = fk.model_class
-                #expr = fk << query
-                #if not fk.null or search_nullable:
-                    #stack.append((rel_model, rel_model.select().where(expr)))
-                #yield (expr, fk)
-
-        pass
-
-    def delete_instance(self, recursive=False, delete_nullable=False):
-        #if recursive:
-            #for query, fk in reversed(list(self.dependencies(delete_nullable))):
-                #if fk.null and not delete_nullable:
-                    #fk.model_class.update(**{fk.name: None}).where(query).execute()
-                #else:
-                    #fk.model_class.delete().where(query).execute()
-        #return self.delete().where(self._meta.primary_key == self.get_id()).execute()
-        pass
-
-    def __eq__(self, other):
-        return other.__class__ == self.__class__ and \
-               self.get_id() is not None and \
-               other.get_id() == self.get_id()
-
-    def __ne__(self, other):
-        return not self == other        
+        
+    @gen.engine
+    def delete_instance(self, recursive=False, delete_nullable=False, callback=None):
+        if recursive:
+            for query, fk in reversed(list(self.dependencies(delete_nullable))):
+                if fk.null and not delete_nullable:
+                    yield genTask(fk.model_class.update(**{fk.name: None}).where(query).execute)
+                else:
+                    yield genTask(fk.model_class.delete().where(query).execute)
+        yield genTask(self.delete().where(self._meta.primary_key == self.get_id()).execute)
+        
+        if callback:
+            callback()
 
 # test
 if __name__ == '__main__':
@@ -614,15 +576,30 @@ if __name__ == '__main__':
             if not exists:
                 yield gen.Task(User.create_table)
 
+            # add
             user = User()
-            user.name = 'wing'
+            user.name = 'test3'
             user.password = '5677'
             
-            pk = yield gen.Task(user.save)
-            print pk
+            yield gen.Task(user.save)
+            print user.id
+            
+            # edit
+            user = yield gen.Task(User.get(User.id == 9))
+            user.name = 'test03'
+            ret = yield gen.Task(user.save)
+            print ret
 
-            user = yield gen.Task(User.select().where(User.name == 'wing').get)
-            self.write(user.name)
+            # count
+            count = yield gen.Task(User.select(User.name).where(User.name == 'test03').count)
+            print count 
+
+            # delete
+            ret = yield gen.Task(User.delete().where(User.name % 'test%').execute)
+            print ret 
+
+            # user = yield gen.Task(User.select().where(User.name == 'wing').get)
+            # self.write(user.name)
             self.finish()
 
     application = Application([
