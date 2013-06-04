@@ -22,7 +22,7 @@ import uuid
 from tornado.web import url, RequestHandler, \
      StaticFileHandler, Application
 from tornado import gen
-
+from tornado.options import options
 from jinja2 import Environment, FileSystemLoader
 
 def session(method):
@@ -416,6 +416,9 @@ class RequestHandler(RequestHandler):
     def finish(self, chunk=None):
         super(RequestHandler, self).finish(chunk)
         self._on_finish()
+
+    def prepare(self):
+        options.tforms_locale = self._
 
     @plugins.Events.on_finish
     def _on_finish(self):
