@@ -424,7 +424,8 @@ class RequestHandler(RequestHandler):
         self._on_finish()
 
     def prepare(self):
-        define('tforms_locale', default=self._)
+        if not hasattr(options, ('tforms_locale')):
+            define('tforms_locale', default=self._)
         #options.tforms_locale = self._
 
     @plugins.Events.on_finish
