@@ -49,11 +49,12 @@ def init(method):
         global _application 
         _application = self
 
-        database = settings.get('database')
+        database = settings.get('database',{})\
+                           .get('run_model')
 
         if database:
             Plugins._meta.database = database
-            database.connect()
+            #database.connect()
 
             exists = yield gen.Task(Plugins.table_exists)
 

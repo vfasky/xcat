@@ -19,10 +19,12 @@ import utils
 import plugins
 import cache
 import uuid
+import re
 from tornado.web import url, RequestHandler, \
      StaticFileHandler, Application
+from tornado.escape import linkify
 from tornado import gen
-from tornado.options import options
+from tornado.options import options, define
 from jinja2 import Environment, FileSystemLoader
 
 def session(method):
@@ -32,7 +34,9 @@ def session(method):
 
     @functools.wraps(method)
     def wrapper(self, *args, **kwargs):
-        settings = self.settings.get('session', {})
+        settings = self.settings.get('session', {})\
+                                .get(self.settings['run_mode'], {})
+
         session_name = settings.get('name', 'PYSESSID')
         session_storage = settings.get('storage', 'Mongod')
         session_config  = settings.get('config', {})
@@ -144,7 +148,7 @@ def acl(method):
         for r in rules:
             if r['URI'] == URI:
                 if False == roles:
-                    roles = get_roles()
+                    roles = get_roles(self)
                 if False == check(r, roles):
                     self._transforms = transforms
                     self.on_access_denied()
@@ -344,9 +348,11 @@ class Application(Application):
 
         # 初始化 app 缓存
         self.cache = False
-        if settings.get('cache') and hasattr(cache, settings['cache'].get('storage', 'Mongod')):
-            Cache = getattr(cache, settings['cache'].get('storage', 'Mongod'))
-            self.cache = Cache()
+
+        cache_cfg = settings.get('cache',{}).get(settings['run_mode'])
+        if cache_cfg and hasattr(cache, cache_cfg.get('storage', 'Mongod')):
+            Cache = getattr(cache, cache_cfg.get('storage', 'Mongod'))
+            self.cache = Cache(**cache_cfg.get('config', {}))
             self._sync_key = settings.get('sync_key', 'xcat.web.Application.id')
             
 
@@ -418,7 +424,8 @@ class RequestHandler(RequestHandler):
         self._on_finish()
 
     def prepare(self):
-        options.tforms_locale = self._
+        define('tforms_locale', default=self._)
+        #options.tforms_locale = self._
 
     @plugins.Events.on_finish
     def _on_finish(self):
@@ -472,7 +479,7 @@ class RequestHandler(RequestHandler):
             'locale' : self.locale,
             'static_url' : self.static_url,
             'xsrf_form_html' : self.xsrf_form_html,
-            'json_encode': Json.encode,
+            'json_encode': utils.Json.encode,
             'linkify': linkify,
         }
         context.update(self.ui)
@@ -491,7 +498,7 @@ class RequestHandler(RequestHandler):
 
     @session
     def get_current_user(self):
-        return self.session['current_user']
+        return self.session.get('current_user', {})
 
     def get_error_html(self, status_code = 'tip', **kwargs):
         return self.render_string('error/%s.html' % status_code, **kwargs)
