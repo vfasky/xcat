@@ -246,9 +246,14 @@ class Route(object):
         if False == hasattr(handler_class, 'routes'):
             handler_class.routes = []
 
+        if len(handler_class.routes) > 0:
+            if handler_class.routes[0]['URI'] != URI:
+                handler_class.routes = []
+
         handler_class.routes.append({
-            'name': name ,
-            'spec': spec
+            'name': name,
+            'spec': spec,
+            'URI': URI
         })
         return handler_class
 
