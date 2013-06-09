@@ -23,6 +23,7 @@ __all__ = [
     'TimeField',
     'PostgresqlAsyncDatabase',
     'WaitAllOps',
+    'AsyncModel',
 ]
 
 '''
@@ -103,7 +104,7 @@ from peewee import PostgresqlDatabase, Query, \
                    ForeignKeyField, PrimaryKeyField, \
                    TextField, IntegerField, BooleanField, \
                    FloatField, DoubleField, BigIntegerField, \
-                   DecimalField, BlobField, fn
+                   DecimalField, BlobField, fn, Field
 import momoko
 #import logging
 #logger = logging.getLogger('mopee')    
@@ -203,7 +204,8 @@ class PostgresqlAsyncDatabase(PostgresqlDatabase):
      
     def get_tables(self, callback=None):
         def _callback(res):
-            callback([row[0] for row in res.fetchall()])
+            if callback:
+                callback([row[0] for row in res.fetchall()])
 
         self.execute_sql("""
             SELECT c.relname
@@ -366,26 +368,28 @@ class AsyncSelectQuery(SelectQuery):
             
         clone.scalar(callback=_callback)
 
-
+    @gen.engine
     def first(self, callback=None):
-        def _callback(res):
-            res.fill_cache(1)
-            try:
-                return callback(res._result_cache[0])
-            except IndexError:
-                pass
+        res = yield gen.Task(self.execut)
+        res.fill_cache(1)
+        try:
+            if callback:
+                callback(res._result_cache[0])
+            return 
+        except IndexError:
+            pass
+        if callback:
             callback(None)
+        
 
-        self.execute(callback=_callback)
-
+    @gen.engine
     def get(self, callback=None):
         clone = self.paginate(1, 1)
 
         try:
-            def _callback(cursor):
-                if callback:
-                    callback(cursor.next())
-            clone.execute(callback=_callback)
+            cursor = yield gen.Task(clone.execute)
+            if callback:
+                callback(cursor.next())
         except StopIteration:
             raise self.model_class.DoesNotExist('instance matching query does not exist:\nSQL: %s\nPARAMS: %s' % (
                 self.sql()
@@ -420,30 +424,25 @@ class AsyncModel(Model):
 
     @classmethod
     def create(cls, **query):
-        callback=None
-        if kwargs.has_key('callback'):
-            callback = kwargs['callback']
-            del kwargs['callback']
+        callback = query.pop('callback', None)
+        
         inst = cls(**query)
         inst.save(force_insert=True, callback=callback)
        
 
-    @classmethod
-    def get(cls, *query, **kwargs):
-        sq = cls.select().naive()
-        if query:
-            sq = sq.where(*query)
-        if kwargs:
-            sq = sq.filter(**kwargs)
-        return sq.get
+    # @classmethod
+    # def get(cls, *query, **kwargs):
+    #     sq = cls.select().naive()
+    #     if query:
+    #         sq = sq.where(*query)
+    #     if kwargs:
+    #         sq = sq.filter(**kwargs)
+    #     return sq.get
 
     @classmethod
     def get_or_create(cls, **kwargs):
-        callback=None
-        if kwargs.has_key('callback'):
-            callback = kwargs['callback']
-            del kwargs['callback']
-            
+        callback = kwargs.pop('callback', None)
+
         sq = cls.select().filter(**kwargs)
         try:
             return sq.get(callback=callback)
@@ -452,57 +451,50 @@ class AsyncModel(Model):
 
 
     @classmethod
+    @gen.engine
     def table_exists(cls, callback=None):
-        def _callback(tables):
+    
+        tables = yield gen.Task(cls._meta.database.get_tables)
+
+        if callback:
             callback(cls._meta.db_table in tables)
-        cls._meta.database.get_tables(callback=_callback)
 
     @classmethod
+    @gen.engine
     def create_table(cls, fail_silently=False, callback=None):
-        def _callback_0(exists):
-            if fail_silently and exists:
-                return
 
-            db = cls._meta.database
-            pk = cls._meta.primary_key
-            if db.sequences and pk.sequence and not db.sequence_exists(pk.sequence):
-                db.create_sequence(pk.sequence)
+        # yiele
+        exists = yield gen.Task(cls.table_exists)
+        if fail_silently and exists:
+            return
 
+        db = cls._meta.database
+        pk = cls._meta.primary_key
+        if db.sequences and pk.sequence and not db.sequence_exists(pk.sequence):
+            db.create_sequence(pk.sequence)
 
-            def _callback_1(cursor):
-                count = 0
-                complete_count = 0
-                def _callback_2(cursor):
-                    global complete_count
-                    complete_count = complete_count + 1
-                    if count == complete_count:
-                        callback(cursor)
+        cursor = yield gen.Task(db.create_table, cls)
 
-                for field_name, field_obj in cls._meta.fields.items():
-                    if isinstance(field_obj, ForeignKeyField):
-                        count = count + 1
-                        db.create_foreign_key(cls, field_obj, callback=_callback_2)
-                    elif field_obj.index or field_obj.unique:
-                        count = count + 1
-                        db.create_index(cls, [field_obj], field_obj.unique, callback=_callback_2)
-
-                if cls._meta.indexes:
-                    for fields, unique in cls._meta.indexes:
-                        count = count + 1
-                        db.create_index(cls, fields, unique, callback=_callback_2)
-                
-                if count == 0 and callback:
-                    callback(cursor)
-            db.create_table(cls, callback=_callback_1)
-
-        cls.table_exists(callback=_callback_0)
-
+        for field_name, field_obj in cls._meta.fields.items():
+            if isinstance(field_obj, ForeignKeyField):
+                yield gen.Task(db.create_foreign_key, cls, field_obj)
+            elif field_obj.index or field_obj.unique:
+                yield gen.Task(db.create_index, cls, [field_obj], field_obj.unique)
+      
+        if cls._meta.indexes:
+            for fields, unique in cls._meta.indexes:
+                count = count + 1
+                yield gen.Task(db.create_index, cls, fields, unique)
         
+        if callback:
+            callback(cursor)
+        
+
     @classmethod
     def drop_table(cls, fail_silently=False, callback=None):
         cls._meta.database.drop_table(cls, fail_silently, callback=callback)
 
-
+    @gen.engine
     def save(self, force_insert=False, only=None, callback=None):
         field_dict = dict(self._data)
         pk = self._meta.primary_key
@@ -515,21 +507,22 @@ class AsyncModel(Model):
                 **field_dict
             ).where(pk == self.get_id())
 
-            def _callback(ret):
+            yield gen.Task(update.execute)
+            if callback:
                 callback(self.get_id())
 
-            update.execute(callback=_callback)
         else:
             if self._meta.auto_increment:
                 field_dict.pop(pk.name, None)
             insert = self.insert(**field_dict)
             
-            def _callback(new_pk):
-                if self._meta.auto_increment:
-                    self.set_id(new_pk)
-                callback(new_pk)
+            new_pk = yield gen.Task(insert.execute)
+            if self._meta.auto_increment:
+                self.set_id(new_pk)
 
-            insert.execute(callback=_callback)
+            if callback:
+                callback(new_pk)
+            
         
     @gen.engine
     def delete_instance(self, recursive=False, delete_nullable=False, callback=None):

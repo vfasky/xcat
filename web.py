@@ -34,6 +34,9 @@ def session(method):
 
     @functools.wraps(method)
     def wrapper(self, *args, **kwargs):
+        if hasattr(self, '_session') and hasattr(self, 'session'):
+            return method(self, *args, **kwargs)
+
         settings = self.settings.get('session', {})\
                                 .get(self.settings['run_mode'], {})
 
@@ -42,6 +45,7 @@ def session(method):
         session_config  = settings.get('config', {})
 
         if hasattr(Xsession, session_storage):
+
             Session = getattr(Xsession, session_storage)
 
             if self.get_secure_cookie(session_name):
@@ -107,6 +111,7 @@ def acl(method):
         return False
 
     # 取当前用户角色
+    #@session
     def get_roles(self):
         # 当前用户
         current_user = self.current_user
@@ -500,11 +505,14 @@ class RequestHandler(RequestHandler):
 
     @session
     def set_current_user(self,session):
-        self.session['current_user'] = session
+        if hasattr(self, 'session'):
+            self.session['current_user'] = session
 
     @session
     def get_current_user(self):
-        return self.session.get('current_user', {})
+        if hasattr(self, 'session'):
+            return self.session.get('current_user', {})
+        return {}
 
     def get_error_html(self, status_code = 'tip', **kwargs):
         return self.render_string('error/%s.html' % status_code, **kwargs)
