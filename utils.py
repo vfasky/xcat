@@ -56,13 +56,11 @@ class Date:
 
     # 将时间格式化成字符
     @staticmethod
-    def time_to_str(f='%Y-%m-%d %X' ,t=False):
+    def time_to_str(f='%Y-%m-%d %X' ,t=None):
         f = f.replace('Y-m-d' , '%Y-%m-%d')
         f = f.replace('H:i:s' , '%X')
-        if t == False and t != 0:
-            t = time.mktime(time.localtime())
-    
-        return time.strftime( f , time.localtime( float( t ) ) )
+       
+        return time.strftime( f , time.localtime( float( t or time.mktime(time.localtime()) ) ) )
 
     @staticmethod
     def time():

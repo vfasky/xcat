@@ -5,59 +5,99 @@
 # @Link    : http://vfasky.com
 # @Version : $Id$
 
-__all__ = [
-    'validators',
-    'fields',
-    'ValidationError',
+__all__ = [  
     'Form',
+    'fields',
+    'validators',
+    'widgets',
+    'ValidationError'
 ]
+import re
+import tornado.locale
+from tornado.escape import to_unicode
+from wtforms import Form as wtForm, fields, validators, widgets, ValidationError
+from wtforms.compat import iteritems
 
-from tforms import validators, fields, validators
-from tforms.forms import TornadoForm as Form
-from tforms.validators import ValidationError
+class Form(wtForm):
+    """
+    Using this Form instead of wtforms.Form
 
+    Example::
 
-if __name__ == '__main__':
-    class SignupForm(Form):
-        username = fields.TextField(
-            'Username', [
-                validators.Required(),
-                validators.Length(min=4, max=16),
-                validators.Regexp(
-                    '[a-zA-Z0-9-]',
-                    message='Username can only contain characters and digits',
-                ),
-            ],
-            description='Username can only contain English characters and digits'
-        )
-        email = fields.TextField(
-            'Email', [
-                validators.Required(),
-                validators.Length(min=4, max=30),
-                validators.Email(),
-            ],
-            description='Please active your account after registration'
-        )
-        password = fields.PasswordField(
-            'Password', [
-                validators.Required(),
-                validators.Length(min=6),
-            ],
-            description='Password must be longer than 6 characters'
-        )
-        password2 = fields.PasswordField(
-            'Confirm', [
-                validators.Required(),
-                validators.Length(min=6),
-            ]
-        )
+        class SigninForm(Form):
+            email = EmailField('email')
+            password = PasswordField('password')
 
-        def validate_password(form, field):
-            if field.data != form.password2.data:
-                raise ValidationError("Passwords don't match")
-    
-    form = SignupForm()
-    for field in form:
-        print field
+        class SigninHandler(RequestHandler):
+            def get(self):
+                form = SigninForm(self.request.arguments, locale_code=self.locale.code)
+
+    """
+    def __init__(self, formdata=None, obj=None, prefix='', locale_code='en_US', **kwargs):
+        self._locale_code = locale_code
+        super(Form, self).__init__(formdata, obj, prefix, **kwargs)
+
+    def process(self, formdata=None, obj=None, **kwargs):
+        if formdata is not None and not hasattr(formdata, 'getlist'):
+            formdata = TornadoArgumentsWrapper(formdata)
+        super(Form, self).process(formdata, obj, **kwargs)
 
     
+    def load_data(self, obj):
+        formdata = TornadoArgumentsWrapper(MopeeObjWrapper(obj, self))
+        return self.process(formdata)
+
+
+    def _get_translations(self):
+        if not hasattr(self, '_locale_code'):
+            self._locale_code = 'en_US'
+        return TornadoLocaleWrapper(self._locale_code)
+
+def MopeeObjWrapper(obj, form):
+    data = {}
+    model = obj
+    for field in form._fields:
+        #print obj[field]
+        if hasattr(model, field):
+            data[field] = [ str(getattr(model,field)) ]
+    return data
+
+
+class TornadoArgumentsWrapper(dict):
+    def __getattr__(self, key):
+        try:
+            return self[key]
+        except KeyError:
+            raise AttributeError
+
+    def __setattr__(self, key, value):
+        self[key] = value
+
+    def __delattr__(self, key):
+        try:
+            del self[key]
+        except KeyError:
+            raise AttributeError
+
+    def getlist(self, key):
+        try:
+            values = []
+            for v in self[key]:
+                v = to_unicode(v)
+                if isinstance(v, unicode):
+                    v = re.sub(r"[\x00-\x08\x0e-\x1f]", " ", v)
+                values.append(v)
+            return values
+        except KeyError:
+            raise AttributeError
+
+
+class TornadoLocaleWrapper(object):
+    def __init__(self, code):
+        self.locale = tornado.locale.get(code)
+
+    def gettext(self, message):
+        return self.locale.translate(message)
+
+    def ngettext(self, message, plural_message, count):
+        return self.locale.translate(message, plural_message, count)

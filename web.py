@@ -25,7 +25,31 @@ from tornado.web import url, RequestHandler, \
 from tornado.escape import linkify
 from tornado import gen
 from tornado.options import options, define
+from tornado.util import import_object
 from jinja2 import Environment, FileSystemLoader
+
+def form(form_name):
+    '''表单加载器'''
+
+    def load(method):
+        @functools.wraps(method)
+        def wrapper(self, *args, **kwargs):
+            if form_name.find('.') == 0 :
+                module_name = self.__class__.__module__.split('.')
+                module_name.pop()
+                form_class = '.'.join(module_name) + form_name
+            else:
+                form_class = form_name
+                
+            locale_code = 'en_US'
+            if hasattr(self, 'locale') and hasattr(self.locale, 'code'):
+                locale_code = self.locale.code
+            self.form = import_object(form_class)(self.request.arguments, locale_code)
+            return method(self, *args, **kwargs)
+
+        return wrapper
+
+    return load
 
 def session(method):
     '''
