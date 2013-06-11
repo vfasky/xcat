@@ -44,28 +44,7 @@ class Json:
     @staticmethod
     def encode(json):
         return escape.json_encode(json)
-    
-
-class Date:
-    # 将字符格式化成时间
-    @staticmethod
-    def str_to_time(s , f='%Y-%m-%d %X'):
-        f = f.replace('Y-m-d' , '%Y-%m-%d')
-        f = f.replace('H:i:s' , '%X')
-        return int(time.mktime(time.strptime( s, f )))
-
-    # 将时间格式化成字符
-    @staticmethod
-    def time_to_str(f='%Y-%m-%d %X' ,t=None):
-        f = f.replace('Y-m-d' , '%Y-%m-%d')
-        f = f.replace('H:i:s' , '%X')
-       
-        return time.strftime( f , time.localtime( float( t or time.mktime(time.localtime()) ) ) )
-
-    @staticmethod
-    def time():
-        return time.mktime(time.localtime())
-
+   
 
 
 class Filters:

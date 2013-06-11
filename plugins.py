@@ -15,7 +15,7 @@ __all__ = [
 
 import functools
 from mopee import AsyncModel, CharField, TextField
-from utils import Json, Date
+from utils import Json
 from tornado import gen
 from tornado.util import import_object 
 from tornado.web import UIModule

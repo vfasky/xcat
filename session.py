@@ -123,28 +123,30 @@ class Mongod(Base):
 
         def get(self, callback=None):
             def _callback(value, error):
-                if error:
-                    raise Error(error)
-                if value:
-                    callback(value)
-                else:
-                    callback(None)
+                if callback:
+                    if error:
+                        raise Error(error)
+                    if value:
+                        callback(value)
+                    else:
+                        callback(None)
 
             self._table.find_one(self.where, callback=_callback)   
 
-        def remove(self, callback):
+        def remove(self, callback=None):
             def _callback(data, error):
-                if error:
-                    raise Error(error)
-
                 if callback:
-                    callback(len(data) == 1)
+                    if error:
+                        raise Error(error)
+
+                    if callback:
+                        callback(len(data) == 1)
 
             self._table.remove(self.where, callback=_callback)
 
 
         @gen.engine
-        def set(self, value, callback):
+        def set(self, value, callback=None):
             session_data = {
                 'session_id' : self.session_id,
                 'data' : value,
@@ -152,11 +154,12 @@ class Mongod(Base):
             }
 
             def _callback(data, error):
-                if error:
-                    raise Error(error)
-
                 if callback:
-                    callback(session_data)
+                    if error:
+                        raise Error(error)
+
+                    if callback:
+                        callback(session_data)
 
             ret, error = yield gen.Task(self._table.find_one, self.where)
             data = ret[0]

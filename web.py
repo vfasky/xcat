@@ -12,6 +12,7 @@ __all__ = [
     'Application',
     'RequestHandler'
 ]
+import copy
 import time
 import functools
 import session as Xsession
@@ -20,8 +21,9 @@ import plugins
 import cache
 import uuid
 import re
+import arrow
 from tornado.web import url, RequestHandler, \
-     StaticFileHandler, Application
+     StaticFileHandler, Application, asynchronous
 from tornado.escape import linkify
 from tornado import gen
 from tornado.options import options, define
@@ -40,11 +42,13 @@ def form(form_name):
                 form_class = '.'.join(module_name) + form_name
             else:
                 form_class = form_name
+            #print form_class
                 
             locale_code = 'en_US'
             if hasattr(self, 'locale') and hasattr(self.locale, 'code'):
                 locale_code = self.locale.code
             self.form = import_object(form_class)(self.request.arguments, locale_code)
+            self.form.xsrf_form_html = self.xsrf_form_html
             return method(self, *args, **kwargs)
 
         return wrapper
@@ -55,11 +59,13 @@ def session(method):
     '''
     异步 session 的绑定
     '''
-
+    @asynchronous
     @functools.wraps(method)
     def wrapper(self, *args, **kwargs):
-        if hasattr(self, '_session') and hasattr(self, 'session'):
+        if hasattr(self, '_session'):
             return method(self, *args, **kwargs)
+
+        print 'init session'
 
         settings = self.settings.get('session', {})\
                                 .get(self.settings['run_mode'], {})
@@ -68,6 +74,7 @@ def session(method):
         session_storage = settings.get('storage', 'Mongod')
         session_config  = settings.get('config', {})
 
+       
         if hasattr(Xsession, session_storage):
 
             Session = getattr(Xsession, session_storage)
@@ -83,24 +90,26 @@ def session(method):
                 pass
 
             def finish(self, *args, **kwargs):
-                """
-                This is a monkey patch finish which will save or delete
-                session data at the end of a request.
-                """
+                
                 super(self.__class__, self).finish(*args, **kwargs)
+                if self._session_cache != self.session:
+                    print 'change session'
+                    if self.session:
+                        print 'save session'
+                        self._session.storage.set(self.session, none_callback)
+                    else:
+                        print 'clear session'
+                        self._session.clear()
 
-                if self.session:
-                    self._session.storage.set(self.session, none_callback)
-                else:
-                    self._session.clear()
-
-            def _callback(data):
+            @gen.engine
+            def init(self):
+                data = yield gen.Task(self._session.get_all)
+                self._session_cache = copy.copy(data)
                 self.session = data
                 self.finish = functools.partial(finish, self)
-
                 method(self, *args, **kwargs)
 
-            self._session.get_all(_callback)
+            init(self)
 
 
     return wrapper
@@ -121,7 +130,6 @@ def acl(method):
 
     # 检查
     def check(rule, roles):
-
         if rule.get('deny', False):
             for r in roles:
                 if r in rule['deny']:
@@ -135,10 +143,11 @@ def acl(method):
         return False
 
     # 取当前用户角色
-    #@session
-    def get_roles(self):
+    @session
+    def get_roles(self, callback=None):
         # 当前用户
         current_user = self.current_user
+        print 'acl check'
 
         # 格式化角色
         roles = []
@@ -155,7 +164,8 @@ def acl(method):
 
                 for r in current_user['roles']:
                     roles.append(r)
-        return roles
+        if callback:
+            callback(roles)
 
 
     @functools.wraps(method)
@@ -172,19 +182,25 @@ def acl(method):
         if len(rules) == 0:
             return method(self, transforms, *args, **kwargs)
 
-        roles = False
-        
-        for r in rules:
-            if r['URI'] == URI:
-                if False == roles:
-                    roles = get_roles(self)
-                if False == check(r, roles):
-                    self._transforms = transforms
-                    self.on_access_denied()
-                    return #self.finish()
+        @gen.engine
+        def init():
+            roles = False
+
+            for r in rules:
+                if r['URI'] == URI:
+                    if False == roles:
+                        roles = yield gen.Task(get_roles, self)
+                        #print roles
+
+                    if False == check(r, roles):
+                        self._transforms = transforms
+                        self.on_access_denied()
+                        return #self.finish()
 
 
-        return method(self, transforms, *args, **kwargs)
+            method(self, transforms, *args, **kwargs)
+
+        init()
 
     return wrapper
 
@@ -447,7 +463,6 @@ class Application(Application):
         if self.cache:
             self._sync_id = yield gen.Task(self.cache.get, self._sync_key, 0) 
 
-
 class RequestHandler(RequestHandler):
 
     # 存放路由
@@ -462,6 +477,7 @@ class RequestHandler(RequestHandler):
             define('tforms_locale', default=self._)
         #options.tforms_locale = self._
 
+    
     @plugins.Events.on_finish
     def _on_finish(self):
         # 关闭数据库连接
@@ -504,21 +520,15 @@ class RequestHandler(RequestHandler):
         return super(RequestHandler,self).render(template_name, **kwargs)
 
     def render_string(self, template_name, **kwargs):
-        context = {
-            'Date' : utils.Date ,
+        context = self.get_template_namespace()
+        context.update({
+            'json_encode': utils.Json.encode,
+            'Date' : arrow ,
             'url_for' : route.url_for ,
             '_' : self._ ,
-            'handler' : self ,
-            'request' : self.request ,
-            'current_user' : self.current_user,
-            'locale' : self.locale,
-            'static_url' : self.static_url,
-            'xsrf_form_html' : self.xsrf_form_html,
-            'json_encode': utils.Json.encode,
-            'linkify': linkify,
-        }
-        context.update(self.ui)
+        })
 
+        context.update(self.ui)
         context.update(kwargs)
 
         template = self.application.jinja_env.get_template(
