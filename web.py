@@ -21,6 +21,7 @@ import plugins
 import cache
 import uuid
 import re
+import os
 import arrow
 from tornado.web import url, RequestHandler, \
      StaticFileHandler, Application, asynchronous
@@ -29,7 +30,7 @@ from tornado import gen
 from tornado.options import options, define
 from tornado.util import import_object
 from jinja2 import Environment, FileSystemLoader
-
+from .utils import Validators
 def form(form_name):
     '''表单加载器'''
 
@@ -203,19 +204,6 @@ def acl(method):
         init()
 
     return wrapper
-
-class _404Handler(RequestHandler):
-    '''404 的处理'''
-
-    def get(self, url):
-        if hasattr(self,'is_reload'):
-            return self.redirect(url)
-
-        return self.write_error(404)
-
-    def post(self, url):
-        return self.get(url)
-
 
 
 class Route(object):
@@ -549,19 +537,56 @@ class RequestHandler(RequestHandler):
         return {}
 
     def get_error_html(self, status_code = 'tip', **kwargs):
-        return self.render_string('error/%s.html' % status_code, **kwargs)
+        # 检查模板目录是否存在
+        error_tpl_path = os.path.join(self.settings['template_path'], 'error')
+        
+        msg = kwargs.get('msg', False) or kwargs.get('exception')
+        if not os.path.isdir(error_tpl_path):
+            return self.write("<pre>%s</pre>" % msg)
+
+        tpl_name = '%s.html' % status_code
+        # 模板不存在
+        if not os.path.isfile(os.path.join(error_tpl_path, tpl_name)):
+            if not Validators.is_number(status_code):
+                return self.write("<pre>%s</pre>" % msg)
+            status_code = str(status_code)
+            # 40x.html
+            tpl_name = '%s%sx.html' % (status_code[0], status_code[1])
+            if os.path.isfile(os.path.join(error_tpl_path, tpl_name)):
+                return self.render_string('error/%s' % tpl_name, **kwargs)
+
+            # 4xx.html
+            tpl_name = '%sxx.html' % status_code[0]
+            if os.path.isfile(os.path.join(error_tpl_path, tpl_name)):
+                return self.render_string('error/%s' % tpl_name, **kwargs)
+
+            return self.write("<pre>%s</pre>" % msg)
+        else:
+            return self.render_string('error/%s.html' % status_code, **kwargs)
 
     def write_error(self, status_code = 'tip', **kwargs):
         if self.is_ajax() and kwargs.get('msg',False) :
             return self.write({
                 'success' : False ,
-                'msg' : kwargs.get('msg')
+                'msg' : (kwargs.get('msg', False) or kwargs.get('exception'))
             })
         return super(RequestHandler,self).write_error(status_code, **kwargs)
 
     # 取运行时间
     def get_run_time(self):
         return round(time.time() - self._start_time , 3)
+
+class _404Handler(RequestHandler):
+    '''404 的处理'''
+
+    def get(self, url):
+        if hasattr(self,'is_reload'):
+            return self.redirect(url)
+
+        return self.write_error(404)
+
+    def post(self, url):
+        return self.get(url)
 
 '''
 
