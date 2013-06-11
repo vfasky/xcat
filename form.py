@@ -13,6 +13,7 @@ __all__ = [
     'ValidationError'
 ]
 import re
+import types
 import tornado.locale
 from tornado.escape import to_unicode
 from wtforms import Form as wtForm, fields, validators, widgets, ValidationError
@@ -59,7 +60,11 @@ def MopeeObjWrapper(obj, form):
     for field in form._fields:
         #print obj[field]
         if hasattr(model, field):
-            data[field] = [ str(getattr(model,field)) ]
+            value = getattr(model,field)
+            if type(value) is types.ListType:
+                data[field] = value
+            else:
+                data[field] = [ str(value) ]
     return data
 
 
@@ -83,7 +88,8 @@ class TornadoArgumentsWrapper(dict):
         try:
             values = []
             for v in self[key]:
-                v = to_unicode(v)
+                if type(v) is types.StringType:
+                    v = to_unicode(v)
                 if isinstance(v, unicode):
                     v = re.sub(r"[\x00-\x08\x0e-\x1f]", " ", v)
                 values.append(v)
