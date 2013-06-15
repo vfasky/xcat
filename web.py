@@ -425,22 +425,23 @@ class Application(Application):
 
     @gen.engine
     def sync(self, sync_id, callback=None):
-        #route.reset_handlers(self)
-        #self.named_handlers = {}
-        
+        route.reset()
+
         # 重新加载 app handlers
         app_handlers = self.settings['app_path'].split(os.path.sep).pop() + '.handlers'
         handlers = import_object(app_handlers)
+
      
         for name in handlers.__all__:
             handler_module = import_object(app_handlers + '.' + name)
             reload(handler_module)
             for v in dir(handler_module):
-                o = getattr(handler_module,v)
-                if type(o) is types.ModuleType:
+                o = getattr(handler_module,v)      
+                if type(o) is types.ModuleType\
+                   and o.__name__.find('.handlers.') != -1:
                     reload(o)
 
-
+        #print route._routes
 
         route.acl(self)
         route.routes(self)

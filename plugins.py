@@ -297,7 +297,7 @@ def format_doc(cls):
 # 安装插件
 @gen.engine
 def install(plugin_name, config=None, callback=None):  
-    register = import_object(plugin_name.strip() + '.register')
+    register = import_object(str(plugin_name).strip() + '.register')
     
     name = register._handler.__module__ + \
            '.' + register._handler.__name__
@@ -376,7 +376,7 @@ def install(plugin_name, config=None, callback=None):
 # 卸载插件
 @gen.engine
 def uninstall(plugin_name, callback=None):
-    register = import_object(plugin_name.strip() + '.register')
+    register = import_object(str(plugin_name).strip() + '.register')
     
     name = register._handler.__module__ + \
            '.' + register._handler.__name__
