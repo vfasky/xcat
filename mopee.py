@@ -193,6 +193,7 @@ class PostgresqlAsyncDatabase(PostgresqlDatabase):
         params = params or ()
         if require_commit and self.get_autocommit():
             cursors = yield momoko.Op(self.get_conn().transaction, [(sql, params)])
+           
             for i, cursor in enumerate(cursors):
                 pass
         else:

@@ -23,6 +23,7 @@ import uuid
 import re
 import os
 import arrow
+import types
 from tornado.web import url, RequestHandler, \
      StaticFileHandler, Application, asynchronous
 from tornado.escape import linkify
@@ -67,7 +68,7 @@ def session(method):
         if hasattr(self, '_session'):
             return method(self, *args, **kwargs)
 
-        print 'init session'
+        #print 'init session'
 
         settings = self.settings.get('session', {})\
                                 .get(self.settings['run_mode'], {})
@@ -95,12 +96,12 @@ def session(method):
                 
                 super(self.__class__, self).finish(*args, **kwargs)
                 if self._session_cache != self.session:
-                    print 'change session'
+                    #print 'change session'
                     if self.session:
-                        print 'save session'
+                        #print 'save session'
                         self._session.storage.set(self.session, none_callback)
                     else:
-                        print 'clear session'
+                        #print 'clear session'
                         self._session.clear()
 
             @gen.engine
@@ -149,7 +150,7 @@ def acl(method):
     def get_roles(self, callback=None):
         # 当前用户
         current_user = self.current_user
-        print 'acl check'
+        #print 'acl check'
 
         # 格式化角色
         roles = []
@@ -300,6 +301,7 @@ class Route(object):
     def reset_handlers(cls,application):
         settings = application.settings
 
+
         # 重置 handlers
         if settings.get("static_path") :
             path = settings["static_path"]
@@ -364,6 +366,7 @@ def sync_app(method):
     def wrapper(self, request):
         if self.cache:
             sync_id = yield gen.Task(self.cache.get, self._sync_key, 0)
+            #print sync_id
             if sync_id != self._sync_id:
                 #print '同步'
                 ret = yield gen.Task(self.sync, sync_id)
@@ -410,18 +413,21 @@ class Application(Application):
 
         return ret
 
-    def sync_ping(self):
+    @gen.engine
+    def sync_ping(self, callback=None):
         # 更新同步信号 
         if self.cache:
             self._sync_id = str(uuid.uuid4())
             # 同步 id
-            self.sync(self._sync_id)
+            yield gen.Task(self.sync, self._sync_id)
+        if callback:
+            callback(True)
 
     @gen.engine
     def sync(self, sync_id, callback=None):
-        route.acl(self)
-        route.routes(self)
-
+        #route.reset_handlers(self)
+        #self.named_handlers = {}
+        
         # 重新加载 app handlers
         app_handlers = self.settings['app_path'].split(os.path.sep).pop() + '.handlers'
         handlers = import_object(app_handlers)
@@ -434,8 +440,12 @@ class Application(Application):
                 if type(o) is types.ModuleType:
                     reload(o)
 
-        self.initialize()
 
+
+        route.acl(self)
+        route.routes(self)
+        self.initialize(**self.settings)
+      
         # 标记已同步
         yield gen.Task(self.cache.set, self._sync_key, sync_id)
 

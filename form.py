@@ -57,14 +57,22 @@ class Form(wtForm):
 def MopeeObjWrapper(obj, form):
     data = {}
     model = obj
-    for field in form._fields:
-        #print obj[field]
-        if hasattr(model, field):
-            value = getattr(model,field)
-            if type(value) is types.ListType:
-                data[field] = value
-            else:
-                data[field] = [ str(value) ]
+    if type(obj) is types.DictType:
+        for field in form._fields: 
+            if model.has_key(field):
+                value = model.get(field)
+                if type(value) is types.ListType:
+                    data[field] = value
+                else:
+                    data[field] = [ str(value) ]
+    else:
+        for field in form._fields: 
+            if hasattr(model, field):
+                value = getattr(model,field)
+                if type(value) is types.ListType:
+                    data[field] = value
+                else:
+                    data[field] = [ str(value) ]
     return data
 
 

@@ -29,16 +29,8 @@ _config = {}
 # 可用插件列表
 _list = {}
 
-class Plugins(AsyncModel):
-    '''
-    插件模型
-    '''
-    name        = CharField(max_length=100,unique=True)
-    bind        = TextField()
-    handlers    = TextField(default='[]') # 控制器
-    ui_modules  = TextField(default='[]') # ui_modules
-    config      = TextField(default='{}') # 配置
-
+# 缓放缓存的key
+_cache_key = '__app.plugins__'
 
 def init(method):
     # 插件初始化
@@ -46,21 +38,10 @@ def init(method):
     @functools.wraps(method)
     @gen.engine
     def wrapper(self, **settings):
-        global _application 
+        global _application
         _application = self
-
-        database = settings.get('database',{})\
-                           .get('run_model')
-
-        if database:
-            Plugins._meta.database = database
-            #database.connect()
-
-            exists = yield gen.Task(Plugins.table_exists)
-
-            if not exists:
-                yield gen.Task(Plugins.create_table)
-
+        
+        if _application.cache:
             yield gen.Task(reset)
 
         method(self, **settings)
@@ -70,26 +51,27 @@ def init(method):
 @gen.engine
 def reset(callback=None):
     # 重置插件
-    global _list , _config , _work_plugins, _application
+    global _list , _config , _work_plugins
 
     _work_plugins = []
     _config       = {}
     _list         = {}
 
-    plugins = yield gen.Task(Plugins.select().order_by(Plugins.id.desc()).execute)
-    
-    for plugin_ar in plugins:
-        _work_plugins.append(plugin_ar.name)
-        _config[plugin_ar.name] = Json.decode(plugin_ar.config)
-        plugin = import_object(str(plugin_ar.name))
+    plugin_configs = yield gen.Task(_application.cache.get, _cache_key, [])
+
+    for plugin_data in plugin_configs:
+        plugin_name = plugin_data.get('name')
+        _work_plugins.append(plugin_name)
+        _config[plugin_name] = plugin_data.get('config', {})
+        plugin = import_object(str(plugin_name))
 
         if _application:
             # 绑定 ui_modules
-            for v in Json.decode(plugin_ar.ui_modules):
+            for v in plugin_data.get('ui_modules', []): #Json.decode(plugin_ar.ui_modules):
                 _application.ui_modules[v.__name__] = import_object(str(v))
             
             # 绑定 header
-            for v in Json.decode(plugin_ar.handlers):
+            for v in plugin_data.get('handlers', []): #Json.decode(plugin_ar.handlers):
                 plugin_module = v.split('.handlers.')[0] + '.handlers'
                 
                 if plugin_module not in sys.modules.keys() :
@@ -97,13 +79,14 @@ def reset(callback=None):
                 else:
                     reload(import_object(str(plugin_module)))
 
-        binds = Json.decode(plugin_ar.bind,{})
+        binds = plugin_data.get('bind', {})
         for event in binds:
             _list.setdefault(event,[])
             for v in binds[event]:
                 v['handler'] = plugin
-                v['name'] = plugin_ar.name
+                v['name'] = plugin_name
                 _list[event].append(v)
+
 
     if callback:
         callback(True)
@@ -126,15 +109,29 @@ def get_config(plugin_name, default = {}):
 @gen.engine
 def set_config(plugin_name, config, callback=None):
     global _config
-    pl_ar = yield gen.Task(Plugins.get, Plugins.name == plugin_name)
-    pl_ar.config = Json.encode(config)
-    yield gen.Task(pl_ar.save)
-    _config[plugin_name] = config
-    if _application:
-        _application.sync_ping()
-    if None:
-        callback()
+    plugin_name = plugin_name.strip()
+    plugin_configs = yield gen.Task(_application.cache.get, _cache_key, None)
 
+    if not plugin_configs:
+        if callback:
+            callback(False)
+        return
+
+    is_save = False
+    for plugin_data in plugin_configs:
+        if plugin_data.get('name') == plugin_name:
+            plugin_data['config'] = config
+            is_save = True
+            break
+
+    if is_save:
+        yield gen.Task(_application.cache.set, _cache_key, plugin_configs)
+        yield gen.Task(_application.sync_ping)
+
+    if callback:
+        callback(is_save)
+
+    
 '''
   调用对应的插件
 '''
@@ -275,93 +272,137 @@ class Events(object):
 
         return wrapper
 
+
+def format_doc(cls):
+    # 格式化 __doc__
+    doc   = cls.__doc__
+    title = cls.__name__
+    link  = ''
+    if doc.find('@title') != -1:
+        title = doc.split('@title').pop().split('@')[0]
+        doc = doc.replace('@title' + title , '')
+        title = title.strip()
+
+    if doc.find('@link') != -1:
+        link = doc.split('@link').pop().split('@')[0]
+        doc = doc.replace('@link' + link , '')
+        link = link.strip()
+
+    return {
+        'txt' : doc ,
+        'title' : title ,
+        'link' : link
+    }
+
 # 安装插件
 @gen.engine
-def install(plugin_name):
-    global _application
+def install(plugin_name, config=None, callback=None):  
     register = import_object(plugin_name.strip() + '.register')
     
     name = register._handler.__module__ + \
            '.' + register._handler.__name__
 
-    count = yield gen.Task(Plugins.select().where(Plugins.name == name).count)
-    if count == 0 :       
-        plugin = import_object(name)()
-        plugin.install()
+    plugin_configs = yield gen.Task(_application.cache.get, _cache_key, [])
 
-        # 尝试自加加载 ui_modules.py
-        try:
-            ui_modules = import_object(plugin_name + '.uimodules')
-            for v in dir(ui_modules):
-                if issubclass(getattr(ui_modules,v), UIModule) \
-                and v != 'UIModule':
-                    plugin.add_ui_module(v)
-        except Exception, e:
-            pass
+    for plugin_data in plugin_configs:
+        if plugin_data.get('name') == name:
+            if callback:
+                callback(False)
+            return
 
-        # 尝试自加加载 handlers.py
-        try:
-            handlers = import_object(plugin_name + '.handlers')
-            reload(handlers)
-            for v in dir(handlers):
-              
-                if issubclass(getattr(handlers,v), RequestHandler) \
-                and v != 'RequestHandler':
+    plugin = import_object(name)()
+    plugin.install()
 
-                    plugin.add_handler(v)
-        except Exception, e:
-            pass
+    # 尝试自加加载 ui_modules.py
+    try:
+        ui_modules = import_object(plugin_name + '.uimodules')
+        for v in dir(ui_modules):
+            if issubclass(getattr(ui_modules,v), UIModule) \
+            and v != 'UIModule':
+                plugin.add_ui_module(v)
+    except Exception, e:
+        pass
+
+    # 尝试自加加载 handlers.py
+    try:
+        handlers = import_object(plugin_name + '.handlers')
+        reload(handlers)
+        for v in dir(handlers):
+          
+            if issubclass(getattr(handlers,v), RequestHandler) \
+            and v != 'RequestHandler':
+
+                plugin.add_handler(v)
+    except Exception, e:
+        pass
 
 
-        handlers = []
-        for v in plugin._handlers:
-            handlers.append(
-                v.__module__ + '.' + v.__name__
-            )
+    handlers = []
+    for v in plugin._handlers:
+        handlers.append(
+            v.__module__ + '.' + v.__name__
+        )
 
-        ui_modules = []
-        for v in plugin._ui_modules:
-            ui_modules.append(
-                v.__module__ + '.' + v.__name__
-            )
+    ui_modules = []
+    for v in plugin._ui_modules:
+        ui_modules.append(
+            v.__module__ + '.' + v.__name__
+        )
 
-        pl = Plugins()
-        pl.name        = name
-        pl.bind        = Json.encode(register._targets)
-        pl.handlers    = Json.encode(handlers)
-        pl.ui_modules  = Json.encode(ui_modules)
+    pl = {}
+    pl['name'] = name
+    pl['bind'] = register._targets
+    pl['handlers'] = handlers
+    pl['ui_modules'] = ui_modules
+    pl['config'] = {}
+    if config:
+        pl['config'] = config
+    elif plugin.form :
+        pl['config']= plugin.form().data
+    
+    plugin_configs.append(pl)
 
-        #TODO form 部分重构
-        # if plugin.get_form() :
-        #     pl.config = Json.encode(plugin.get_form().get_default_values())
-        yield gen.Task(pl.save)
+    yield gen.Task(_application.cache.set, _cache_key, plugin_configs)
 
-        # 通知 application 同步
-        if _application:
-            _application.sync_ping()
+  
+    if _application:
+        yield gen.Task(_application.sync_ping)
 
+    if callback:
+        callback(True)
+
+  
 
 # 卸载插件
 @gen.engine
-def uninstall(plugin_name):
+def uninstall(plugin_name, callback=None):
     register = import_object(plugin_name.strip() + '.register')
     
     name = register._handler.__module__ + \
            '.' + register._handler.__name__
 
-    ar = Plugins.select().where(Plugins.name == name)
-    count = yield gen.Task(ar.count)
-    if count == 1 :
-        plugin = import_object(name)()
-        plugin.uninstall()
+    plugin_configs = yield gen.Task(_application.cache.get, _cache_key, [])
 
-        ret = yield gen.Task(Plugins.delete()\
-                                    .where(Plugins.name == name)\
-                                    .execute)
+    for plugin_data in plugin_configs:
+        if plugin_data.get('name') == name:
+            plugin_configs.remove(plugin_data)
 
-        # 通知 application 同步
-        if ret and _application:
-            _application.sync_ping()
+            yield gen.Task(_application.cache.set, _cache_key, plugin_configs)
+
+            # 通知 application 同步
+            if _application:
+                yield gen.Task(_application.sync_ping)
+
+            if callback:
+                callback(True)
+
+            return
+
+    if callback:
+        callback(False)
+    return
+
+  
 
 class Register(object):
     '''
@@ -403,6 +444,9 @@ class Base(object):
     """
       插件的基类
     """
+   
+    # 配置表单定义
+    form = None
 
     def __init__(self):
 
@@ -410,6 +454,7 @@ class Base(object):
 
         self.full_name = self.module + '.' + self.__class__.__name__
 
+        
   
         # 运行时的上下文
         self._context = {}
@@ -433,9 +478,6 @@ class Base(object):
     '''
     def uninstall(self):
         pass
-
-    def get_form(self):
-        return False
 
     # 取配置
     @property
