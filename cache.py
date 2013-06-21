@@ -51,7 +51,9 @@ class Mongod(object):
             port = kwargs.get('port', 27017), 
             maxcached = kwargs.get('maxcached', 10), 
             maxconnections = kwargs.get('maxconnections', 50), 
-            dbname = kwargs.get('dbname', 'cache')
+            dbname = kwargs.get('dbname', 'cache'),
+            dbuser = kwargs.get('dbuser', None),
+            dbpass = kwargs.get('dbpass', None)
         )
 
         self._table = kwargs.get('table', 'caches')
