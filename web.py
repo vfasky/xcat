@@ -18,6 +18,7 @@ import functools
 import session as Xsession
 import utils
 import plugins
+import config
 import cache
 import uuid
 import re
@@ -45,8 +46,7 @@ def form(form_name):
                 form_class = '.'.join(module_name) + form_name
             else:
                 form_class = form_name
-            #print form_class
-                
+      
             locale_code = 'en_US'
             if hasattr(self, 'locale') and hasattr(self.locale, 'code'):
                 locale_code = self.locale.code
@@ -68,56 +68,52 @@ def session(method):
         if hasattr(self, '_session'):
             return method(self, *args, **kwargs)
 
-        #print 'init session'
+        settings = config.get('session', False)
 
-        settings = self.settings.get('session', {})\
-                                .get(self.settings['run_mode'], {})
+        if settings:
+            session_name = settings.get('name', 'PYSESSID')
+            session_storage = settings.get('storage', 'Mongod')
+            session_config = settings.get('config', {})
+           
+            if hasattr(Xsession, session_storage):
 
-        session_name = settings.get('name', 'PYSESSID')
-        session_storage = settings.get('storage', 'Mongod')
-        session_config  = settings.get('config', {})
+                Session = getattr(Xsession, session_storage)
 
-       
-        if hasattr(Xsession, session_storage):
+                if self.get_secure_cookie(session_name):
+                    self._session = Session(self.get_secure_cookie(session_name), **session_config)
+                else:
+                    session = Session(**session_config)
+                    self.set_secure_cookie(session_name , session.id)
+                    self._session = session
 
-            Session = getattr(Xsession, session_storage)
+                def none_callback(*args, **kwargs):
+                    pass
 
-            if self.get_secure_cookie(session_name):
-                self._session = Session(self.get_secure_cookie(session_name), **session_config)
-            else:
-                session = Session(**session_config)
-                self.set_secure_cookie(session_name , session.id)
-                self._session = session
+                def finish(self, *args, **kwargs):
+                    
+                    super(self.__class__, self).finish(*args, **kwargs)
+                    if self._session_cache != self.session:
+                        #print 'change session'
+                        if self.session:
+                            #print 'save session'
+                            self._session.storage.set(self.session, none_callback)
+                        else:
+                            #print 'clear session'
+                            self._session.clear()
 
-            def none_callback(*args, **kwargs):
-                pass
+                @gen.engine
+                def init(self):
+                    data = yield gen.Task(self._session.get_all)
+                    self._session_cache = copy.copy(data)
+                    self.session = data
+                    self.finish = functools.partial(finish, self)
+                    method(self, *args, **kwargs)
 
-            def finish(self, *args, **kwargs):
-                
-                super(self.__class__, self).finish(*args, **kwargs)
-                if self._session_cache != self.session:
-                    #print 'change session'
-                    if self.session:
-                        #print 'save session'
-                        self._session.storage.set(self.session, none_callback)
-                    else:
-                        #print 'clear session'
-                        self._session.clear()
-
-            @gen.engine
-            def init(self):
-                data = yield gen.Task(self._session.get_all)
-                self._session_cache = copy.copy(data)
-                self.session = data
-                self.finish = functools.partial(finish, self)
-                method(self, *args, **kwargs)
-
-            init(self)
-
+                init(self)
+        else:
+            method(self, *args, **kwargs)
 
     return wrapper
-
-
 
 def acl(method):
     '''
@@ -301,7 +297,6 @@ class Route(object):
     def reset_handlers(cls,application):
         settings = application.settings
 
-
         # 重置 handlers
         if settings.get("static_path") :
             path = settings["static_path"]
@@ -377,7 +372,7 @@ def sync_app(method):
 
 class Application(Application):
    
-    def __init__(self, handlers=None, default_host="", transforms=None,
+    def __init__(self, default_host="", transforms=None,
                  wsgi=False, **settings):
 
         if settings.get('template_path'):
@@ -390,16 +385,15 @@ class Application(Application):
 
         # 初始化 app 缓存
         self.cache = False
-
-        cache_cfg = settings.get('cache',{}).get(settings['run_mode'])
-        if cache_cfg and hasattr(cache, cache_cfg.get('storage', 'Mongod')):
-            Cache = getattr(cache, cache_cfg.get('storage', 'Mongod'))
+        cache_cfg = config.get('cache', False)
+        cache_storage = cache_cfg.get('storage', 'Mongod')
+        if cache_cfg and hasattr(cache, cache_storage):
+            Cache = getattr(cache, cache_storage)
             self.cache = Cache(**cache_cfg.get('config', {}))
             self._sync_key = settings.get('sync_key', 'xcat.web.Application.id')
             
-
         ret = super(Application,self).__init__(
-            handlers,
+            [],
             default_host,
             transforms,
             wsgi,
@@ -600,96 +594,3 @@ class _404Handler(RequestHandler):
     def post(self, url):
         return self.get(url)
 
-'''
-
-测试 and 用法
-===============
-
-``` sh 
-
-This is ApacheBench, Version 2.3 <$Revision: 655654 $>
-Copyright 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
-Licensed to The Apache Software Foundation, http://www.apache.org/
-
-Benchmarking 192.168.0.135 (be patient).....done
-
-
-Server Software:        TornadoServer/3.0.1
-Server Hostname:        192.168.0.135
-Server Port:            8181
-
-Document Path:          /
-Document Length:        0 bytes
-
-Concurrency Level:      10
-Time taken for tests:   0.033 seconds
-Complete requests:      10
-Failed requests:        0
-Write errors:           0
-Total transferred:      3950 bytes
-HTML transferred:       0 bytes
-Requests per second:    307.60 [#/sec] (mean)
-Time per request:       32.510 [ms] (mean)
-Time per request:       3.251 [ms] (mean, across all concurrent requests)
-Transfer rate:          118.65 [Kbytes/sec] received
-
-Connection Times (ms)
-              min  mean[+/-sd] median   max
-Connect:        1    1   0.4      1       2
-Processing:    18   27   5.3     31      31
-Waiting:       17   26   5.3     30      31
-Total:         19   28   5.3     32      32
-
-Percentage of the requests served within a certain time (ms)
-  50%     32
-  66%     32
-  75%     32
-  80%     32
-  90%     32
-  95%     32
-  98%     32
-  99%     32
- 100%     32 (longest request)
-
-'''
-if __name__ == '__main__':
-    from tornado.ioloop import IOLoop
-    from tornado.httpserver import HTTPServer
-    #from tornado.options import parse_command_line
-    from tornado.web import asynchronous
-    import mopee
-
-    @route(r'/')
-    class Handler(RequestHandler):
-
-        @asynchronous
-        @session
-        def get(self):
-            if self.session.get('test2'):
-                print self.session['test2'] 
-            else:
-                self.session['test2'] = {'test': 1233}
-                print 'write'
-            # 清空
-            #self.session = None
-            self.finish()
-
-    database = mopee.PostgresqlAsyncDatabase('test',
-        user = 'vfasky',
-        host = '127.0.0.1',
-        password = '19851024',
-        size = 20,
-    )
-
-    settings = dict(
-        debug=True, 
-        database=database,
-        cache={},
-        cookie_secret="fsfwo#@(sfk"
-    )
-                        
-    application = Application([], **settings)
-
-    http_server = HTTPServer(application)
-    http_server.listen(8181)
-    IOLoop.instance().start()
